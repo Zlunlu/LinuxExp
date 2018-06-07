@@ -1,61 +1,43 @@
-//
-// Created by xiang on 18-5-27.
-//
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/msg.h>
+#include <unistd.h>
 
-#include<stdio.h>
-#include<stdlib.h>
-#include<sys/ipc.h>
-#include<sys/msg.h>
-#include<string.h>
-#include <zconf.h>
+#define MSG_FILE "/etc/passwd"
 
-struct msgbuf {
-    int type;
-    char ptr[0];
+struct msg_form {
+    long type;
+    char text[256];
 };
 
-int main(int argc, char *argv[]) {
-    // 同样的创建一个IPC机制
+int main() {
+    int msqid;
     key_t key;
-    key = ftok("/home/message", 100);
-
-    // 创建一个消息队列
-    int msgid;
-    msgid = msgget(key, IPC_CREAT | 0600);
-    printf("msgid = %d\n", msgid);
-
-
-    // 创建发送进程
-    pid_t pid;
-    pid = fork();
-
-    if (pid == 0) {
-        // 发送子进程
-        while (1) {
-            printf("Please input your message to send:");
-            char buf[128];
-            // 从标准输入流中读128个字节到缓冲区
-            fgets(buf, 128, stdin);
-            struct msgbuf *ptr = malloc(sizeof(struct msgbuf) + strlen(buf) + 1);
-            ptr->type = 1;
-            memcpy(ptr->ptr, buf, strlen(buf) + 1);
-            // 发送消息到消息队列
-            msgsnd(msgid, ptr, strlen(buf) + 1, 0);
-            free(ptr);
-        }
-    } else {
-        // 接收进程
-        printf("hello, world, this is B");
-        struct msgbuf {
-            int type;
-            char ptr[1024];
-        };
-        while (1) {
-            struct msgbuf mybuf;
-            memset(&mybuf, '\0', sizeof(mybuf));
-            // 从消息对列中取出消息, 1表示接收消息的类型, 由发送进程指定
-            msgrcv(msgid, &mybuf, 1024, 2, 0);
-            printf("recv message:%s\n", mybuf.ptr);
-        }
+    struct msg_form msg;
+    // 获取key值
+    if ((key = ftok(MSG_FILE, 'z')) < 0) {
+        perror("ftok error");
+        exit(1);
     }
+    // 打印key值
+    printf("Message Queue - Server key is: %d.\n", key);
+    // 创建消息队列
+    if ((msqid = msgget(key, IPC_CREAT | 0777)) == -1) {
+        perror("msgget error");
+        exit(1);
+    }
+    // 打印消息队列ID及进程ID
+    printf("My msqid is: %d.\n", msqid);
+    printf("My pid is: %d.\n", getpid());
+    // 循环读取消息
+    while (1) {
+        msgrcv(msqid, &msg, 256, 888, 0); // 返回类型为888的第一个消息
+        printf("Server: receive msg.text is: %s.\n", msg.text);
+        printf("Server: receive msg.type is: %ld.\n", msg.type);
+
+        msg.type = 777; // 客户端接收的消息类型
+        sprintf(msg.text, "hello, I'm server %d", getpid());
+        msgsnd(msqid, &msg, sizeof(msg.text), 0);
+    }
+    return 0;
 }

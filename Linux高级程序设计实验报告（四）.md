@@ -199,15 +199,506 @@ int main(int argc, char *argv[]) {
 
 ### （一）实验目的
 
-> 使用c语言实现IPC三种进程间的通信方式：信号量、消息队列、套接字
+> 使用c语言实现IPC三种进程间的通信方式：信号量、消息队列、共享内存
 
 ### （二）实验原理
 
+![微信图片_20180607103553](/home/xiang/Desktop/exp2/微信图片_20180607103553.jpg)
+
+>​	信号量通信机制主要用来实现进程间同步，避免并发访问共享资源。信号量值可以标示系统可用资源的个数。 通常所说的创建一个信号量实际上是创建了一个信号量集合，在这个信号量集合中，可能有多个信号量。
+>
+>​	共享内存进程间通信机制主要用于实现进程间大量的数据传输。共享内存是在内存中单独开辟的一段内存空间，这段内存空间有自己特有的数据结构，包括访问权限、大小和最近访问的时间等。
+
+![微信图片_20180607103541](/home/xiang/Desktop/exp2/微信图片_20180607103541.jpg)
+
 ### （三）代码实现
+
+#### 1. 消息队列
+
+```C
+// 发送端
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/msg.h>
+#include <unistd.h>
+
+#define MSG_FILE "/etc/passwd"
+
+struct msg_form {
+    long type;
+    char text[256];
+};
+
+int main() {
+    int msqid;
+    key_t key;
+    struct msg_form msg;
+    // 获取key值
+    if ((key = ftok(MSG_FILE, 'z')) < 0) {
+        perror("ftok error");
+        exit(1);
+    }
+    // 打印key值
+    printf("Message Queue - Client key is: %d.\n", key);
+    // 打开消息队列
+    if ((msqid = msgget(key, IPC_CREAT | 0777)) == -1) {
+        perror("msgget error");
+        exit(1);
+    }
+    printf("My msqid is: %d.\n", msqid);
+    printf("My pid is: %d.\n", getpid());
+
+    // 添加消息，类型为888
+    msg.type = 888;
+    sprintf(msg.text, "hello, I'm client %d", getpid());
+    msgsnd(msqid, &msg, sizeof(msg.text), 0);
+    // 读取类型为777的消息
+    msgrcv(msqid, &msg, 256, 777, 0);
+    printf("Client: receive msg.text is: %s.\n", msg.text);
+    printf("Client: receive msg.type is: %ld.\n", msg.type);
+    return 0;
+}
+
+// 接受端
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/msg.h>
+#include <unistd.h>
+
+#define MSG_FILE "/etc/passwd"
+
+struct msg_form {
+    long type;
+    char text[256];
+};
+
+int main() {
+    int msqid;
+    key_t key;
+    struct msg_form msg;
+    // 获取key值
+    if ((key = ftok(MSG_FILE, 'z')) < 0) {
+        perror("ftok error");
+        exit(1);
+    }
+    // 打印key值
+    printf("Message Queue - Server key is: %d.\n", key);
+    // 创建消息队列
+    if ((msqid = msgget(key, IPC_CREAT | 0777)) == -1) {
+        perror("msgget error");
+        exit(1);
+    }
+    // 打印消息队列ID及进程ID
+    printf("My msqid is: %d.\n", msqid);
+    printf("My pid is: %d.\n", getpid());
+    // 循环读取消息
+    while (1) {
+        msgrcv(msqid, &msg, 256, 888, 0); // 返回类型为888的第一个消息
+        printf("Server: receive msg.text is: %s.\n", msg.text);
+        printf("Server: receive msg.type is: %ld.\n", msg.type);
+
+        msg.type = 777; // 客户端接收的消息类型
+        sprintf(msg.text, "hello, I'm server %d", getpid());
+        msgsnd(msqid, &msg, sizeof(msg.text), 0);
+    }
+    return 0;
+}
+
+```
+
+#### 2. 信号量
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/sem.h>
+#include <unistd.h>
+
+union semun {
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+};
+
+
+/**
+ * 初始化信号量
+ * @param sem_id 信号量集ID
+ * @param value 
+ * @return 
+ */
+int init_sem(int sem_id, int value) {
+    union semun tmp;
+    tmp.val = value;
+    if (semctl(sem_id, 0, SETVAL, tmp) == -1) {
+        perror("Init Semaphore Error");
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * P操作
+ * @param sem_id 信号量集ID
+ * @return 
+ */
+int sem_p(int sem_id) {
+    struct sembuf sbuf;
+    sbuf.sem_num = 0; //序号
+    sbuf.sem_op = -1; //P操作
+    sbuf.sem_flg = SEM_UNDO;
+
+    if (semop(sem_id, &sbuf, 1) == -1) {
+        perror("P operation Error");
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * V操作
+ * @param sem_id 信号量集ID
+ * @return 
+ */
+int sem_v(int sem_id) {
+    struct sembuf sbuf;
+    sbuf.sem_num = 0; //序号
+    sbuf.sem_op = 1;  //V操作
+    sbuf.sem_flg = SEM_UNDO;
+
+    if (semop(sem_id, &sbuf, 1) == -1) {
+        perror("V operation Error");
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * 删除信号量集
+ * @param sem_id 信号量集ID
+ * @return 
+ */
+int del_sem(int sem_id) {
+    union semun tmp;
+    if (semctl(sem_id, 0, IPC_RMID, tmp) == -1) {
+        perror("Delete Semaphore Error");
+        return -1;
+    }
+    return 0;
+}
+
+int main() {
+    int sem_id;
+    key_t key;
+    pid_t pid;
+    // 获取key值
+    if ((key = ftok(".", 'z')) < 0) {
+        perror("ftok error");
+        exit(1);
+    }
+    // 创建信号量集，其中只有一个信号量
+    if ((sem_id = semget(key, 1, IPC_CREAT | 0666)) == -1) {
+        perror("semget error");
+        exit(1);
+    }
+    // 初始化：初值设为0资源被占用
+    init_sem(sem_id, 0);
+    if ((pid = fork()) == -1)
+        perror("Fork Error");
+    else if (pid == 0) {
+        sleep(2);
+        printf("Process child: pid=%d\n", getpid());
+        sem_v(sem_id);
+    } else {
+        sem_p(sem_id);
+        printf("Process father: pid=%d\n", getpid());
+        sem_v(sem_id);
+        del_sem(sem_id);
+    }
+    return 0;
+}
+```
+
+#### 3. 共享内存
+
+```c
+// 服务端
+#include<stdio.h>
+#include<stdlib.h>
+#include<sys/shm.h>
+#include<sys/sem.h>
+#include<sys/msg.h>
+#include<string.h>
+
+struct msg_form {
+    long type;
+    char text;
+};
+
+union semun {
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+};
+
+/**
+ * 初始化信号量
+ * @param sem_id 信号量集ID
+ * @param value
+ * @return
+ */
+int init_sem(int sem_id, int value) {
+    union semun tmp;
+    tmp.val = value;
+    if (semctl(sem_id, 0, SETVAL, tmp) == -1) {
+        perror("Init Semaphore Error");
+        return -1;
+    }
+    return 0;
+}
+
+
+/**
+ * P操作
+ * @param sem_id 信号量集ID
+ * @return
+ */
+int sem_p(int sem_id) {
+    struct sembuf sbuf;
+    sbuf.sem_num = 0; //序号
+    sbuf.sem_op = -1; //p操作
+    sbuf.sem_flg = SEM_UNDO;
+
+    if (semop(sem_id, &sbuf, 1) == -1) {
+        perror("P operation Error");
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * V操作
+ * @param sem_id 信号量集ID
+ * @return
+ */
+int sem_v(int sem_id) {
+    struct sembuf sbuf;
+    sbuf.sem_num = 0; //序号
+    sbuf.sem_op = 1; //v操作
+    sbuf.sem_flg = SEM_UNDO;
+
+    if (semop(sem_id, &sbuf, 1) == -1) {
+        perror("V operation Error");
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * 删除信号量集
+ * @param sem_id 信号量集ID
+ * @return
+ */
+int del_sem(int sem_id) {
+    union semun tmp;
+    if (semctl(sem_id, 0, IPC_RMID, tmp) == -1) {
+        perror("Delete Semaphore Error");
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * 创建信号量集
+ * @return
+ */
+int creat_sem(key_t key) {
+    int sem_id;
+    if ((sem_id = semget(key, 1, IPC_CREAT | 0666)) == -1) {
+        perror("semget error");
+        exit(-1);
+    }
+    init_sem(sem_id, 1); //初值设为1资源未占用
+    return sem_id;
+}
+
+int main() {
+    key_t key;
+    int shmid, semid, msqid;
+    char *shm;
+    char data[] = "this is server";
+    struct shmid_ds buf1; //用于删除共享内存
+    struct msqid_ds buf2; //用于删除消息队列
+    struct msg_form msg; //消息队列用于通知对方更新了共享内存
+
+    //获取key值
+    if ((key = ftok(".", 'z')) < 0) {
+        perror("ftok error");
+        exit(1);
+    }
+    //创建共享内存.成功返回共享内存的ID，失败返回-1
+    if ((shmid = shmget(key, 1024, IPC_CREAT | 0666)) == -1) {
+        perror("Create Shared Error");
+        exit(1);
+    }
+    //连接共享内存，成功返回共享内存的指针，失败返回-1
+    shm = (char *) shmat(shmid, 0, 0);
+    if ((int) shm == -1) {
+        perror("Attach Shared Memory Error");
+        exit(1);
+    }
+
+    //创建消息队列
+    if ((msqid = msgget(key, IPC_CREAT | 0777)) == -1) {
+        perror("msgget error");
+        exit(1);
+    }
+    //创建信号量
+    semid = creat_sem(key);
+    //读数据
+    while (1) {
+        msgrcv(msqid, &msg, 1, 888, 0); //读取类型为888的消息
+        if (msg.text == 'q')
+            break;
+        if (msg.text == 'r') //读共享内存
+        {
+            sem_p(semid);
+            printf("%s\n", shm);
+            sem_v(semid);
+        }
+    }
+
+    //断开连接
+    shmdt(shm);
+
+    //删除共享内存，消息队列，信号量
+    shmctl(shmid, IPC_RMID, &buf1);
+    msgctl(msqid, IPC_RMID, &buf2);
+    del_sem(semid);
+    return 0;
+}
+
+// 服务端
+#include<stdio.h>
+#include<stdlib.h>
+#include<sys/shm.h>  //共享内存
+#include<sys/sem.h>  //信号量
+#include<sys/msg.h>  //消息队列
+#include<string.h>
+
+struct msg_form {
+    long type;
+    char text;
+};
+
+union semun {
+    int val;
+    struct semid_ds *buf;
+    unsigned short *array;
+};
+
+int sem_v(int sem_id) {
+    struct sembuf sbuf;
+    sbuf.sem_num = 0; //序号
+    sbuf.sem_op = 1; //v操作
+    sbuf.sem_flg = SEM_UNDO;
+
+    if (semop(sem_id, &sbuf, 1) == -1) {
+        perror("V operation Error");
+        return -1;
+    }
+    return 0;
+}
+
+int main() {
+    key_t key;
+    int shmid, semid, msqid;
+    char *shm;
+    struct msg_form msg;
+    int flag = 1;
+
+    //获取key值
+    if ((key = ftok(".", 'z')) < 0) {
+        perror("ftok error");
+        exit(1);
+    }
+
+    //获取共享内存
+    if ((shmid = shmget(key, 1024, 0)) == -1) {
+        perror("shmget error");
+        exit(1);
+    }
+
+    //连接共享内存
+    shm = (char *) shmat(shmid, 0, 0);
+    if ((int) shm == -1) {
+        perror("Attach Shared Memory Error");
+        exit(1);
+    }
+
+    //创建消息队列
+    if ((msqid = msgget(key, 0)) == -1) {
+        perror("msgget error");
+        exit(1);
+    }
+
+    //获取信号量
+    if ((semid = semget(key, 0, 0)) == -1) {
+        perror("segment error");
+        exit(1);
+    }
+
+    while (flag) {
+        char c;
+        printf("please input command: ");
+        scanf("%c", &c);
+        switch (c) {
+            case 'r':
+                printf("Data to send: ");
+                sem_p(semid); //访问资源
+                scanf("%s", shm);
+                sem_v(semid); //释放资源
+                //清空标准输入缓冲区
+                while ((c = getchar()) != '\n' && c != EOF);
+                msg.type = 888;
+                msg.text = 'r'; //发送消息通知服务器读数据
+                msgsnd(msqid, &msg, sizeof(msg.text), 0);
+                break;
+            case 'q':
+                msg.type = 888;
+                msg.text = 'q';
+                msgsnd(msqid, &msg, sizeof(msg.text), 0);
+                flag = 0;
+                break;
+            default:
+                printf("Wrong input!\n");
+                //清空标准输入缓冲区
+                while ((c = getchar()) != '\n' && c != EOF);
+        }
+    }
+
+    shmdt(shm);
+    return 0;
+}
+```
 
 ### （四）实验结果
 
+消息队列
+
+![深度截图_Desktop_20180607102142](/home/xiang/Desktop/深度截图_Desktop_20180607102142.png)
+
+共享内存
+
+![深度截图_Desktop_20180607101049](/home/xiang/Desktop/深度截图_Desktop_20180607101049.png)
+
+
+
 ### （五）实验总结
+
+> 通过本次实验，实习了进程间通信的几种常见方法：
+>
+> ​	其中共享内存是最快的通信方式；消息队列是消息的链表，存在在内存中，进程间通过消息队列标识符进行消息的传递；信号量通信机制主要用来实现进程间的同步，避免并发访问共享资源。
 
 ## 三、有名管道、无名管道线程间通信的实现
 
